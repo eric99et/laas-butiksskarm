@@ -1,0 +1,7 @@
+{
+  "version": "2026-11-16-2",
+  "checkEveryMinutes": 2,
+  "items": [
+    { "type": "video", "src": "media/blueprint-2026-11-16.mp4" }
+  ]
+}
