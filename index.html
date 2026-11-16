@@ -58,6 +58,29 @@
     return r.json();
   }
 
+  // Download a media file once, keep it in the cache, return a local blob URL
+  const blobUrls = {};
+  async function cachedUrl(src) {
+    const abs = new URL(src, location.href).href;
+    if (blobUrls[abs]) return blobUrls[abs];
+    try {
+      const c = await caches.open('laas-screen');
+      const res = await c.match(abs);
+      if (!res) return null;
+      return (blobUrls[abs] = URL.createObjectURL(await res.blob()));
+    } catch (e) { return null; }
+  }
+  async function loadLocal(src) {
+    const hit = await cachedUrl(src);
+    if (hit) return hit;
+    const abs = new URL(src, location.href).href;
+    const res = await fetch(abs, { cache: 'no-store' });
+    if (!res.ok) throw new Error('media ' + res.status);
+    const blob = await res.blob();
+    try { const c = await caches.open('laas-screen'); await c.put(abs, new Response(blob, { headers: { 'Content-Type': 'video/mp4' } })); } catch (e) {}
+    return (blobUrls[abs] = URL.createObjectURL(blob));
+  }
+
   function show(i) {
     clearTimeout(timer);
     const items = playlist.items;
@@ -71,21 +94,29 @@
       if (!single) timer = setTimeout(next, (item.seconds || 8) * 1000);
     } else {
       el = document.createElement('video');
-      el.src = item.src;
       el.autoplay = true; el.playsInline = true;
       el.setAttribute('playsinline', '');
       el.preload = 'auto';
       el.muted = !soundAllowed || item.mute === true;
       if (single) el.loop = true; else el.onended = next;
+      let triedFallback = false;
       el.onerror = () => {
-        // Screen can't decode full size: try the smaller fallback once
-        if (item.fallback && el.src.indexOf(item.fallback) === -1) { el.src = item.fallback; el.play().catch(() => {}); return; }
+        // Screen can't decode full size: use the smaller fallback
+        if (item.fallback && !triedFallback) {
+          triedFallback = true;
+          loadLocal(item.fallback).then(u => { el.src = u; el.play().catch(() => {}); }, () => { el.src = item.fallback; });
+          return;
+        }
         setTimeout(() => location.reload(), 30000);
       };
-      // Also fall back if nothing has loaded after 12 s
-      if (item.fallback) setTimeout(() => {
-        if (el.readyState < 2 && el.src.indexOf(item.fallback) === -1) { el.src = item.fallback; el.muted = true; el.play().catch(() => {}); }
-      }, 12000);
+      // Play from device memory (no wifi needed while playing)
+      cachedUrl(item.src).then(hit => {
+        if (hit) { el.src = hit; el.play().catch(() => {}); return; }
+        // First time: stream the small version now, download the full one in the background
+        el.src = item.fallback || item.src;
+        el.play().catch(() => {});
+        loadLocal(item.src).then(() => { if (playlist.items[idx % playlist.items.length] === item) show(idx); }, () => {});
+      });
       let shown = false;
       const reveal = () => { if (!shown) { shown = true; swap(el); } };
       el.addEventListener('playing', reveal);
