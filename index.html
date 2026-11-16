@@ -52,11 +52,39 @@
   };
   ['pointerdown', 'touchstart', 'keydown'].forEach(t => addEventListener(t, unlock, { passive: true }));
 
+  // What to play is edited in LAAS HQ (Marketing → Store screen) and read from Supabase.
+  // playlist.json next to this page is only a backup if Supabase can't be reached.
+  const SB = 'https://qblwsxhryjvvjbvnggdi.supabase.co';
+  const SB_KEY = 'sb_publishable_0r0degjBGfvkHe81HwWxJQ_AGJAsKOE'; // public anon key: can only read the playlist and check in
+  const SCREEN = params.get('screen') || 'main';
   async function fetchPlaylist() {
+    try {
+      const r = await fetch(SB + '/rest/v1/screen_playlists?select=version,items&id=eq.' + encodeURIComponent(SCREEN),
+        { cache: 'no-store', headers: { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY } });
+      if (r.ok) {
+        const rows = await r.json();
+        if (rows[0]) return { version: rows[0].version, checkEveryMinutes: 2, items: rows[0].items || [] };
+      }
+    } catch (e) {}
     const r = await fetch('playlist.json?t=' + Date.now(), { cache: 'no-store' });
     if (!r.ok) throw new Error('playlist ' + r.status);
     return r.json();
   }
+
+  // Tell HQ what is on the screen right now (so the team can see it switched)
+  let nowPlaying = '';
+  function ping() {
+    if (!playlist) return;
+    const v = stage.querySelector('video.on');
+    const cv = (navigator.userAgent.match(/Chrome\/(\d+)/) || [])[1] || '?';
+    const info = 'Chrome ' + cv + ' · ' + innerWidth + '×' + innerHeight + ' · ' + (v ? (v.muted ? 'sound off' : 'sound on') : 'image');
+    fetch(SB + '/rest/v1/rpc/screen_ping', {
+      method: 'POST',
+      headers: { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_screen: SCREEN, p_version: playlist.version, p_playing: nowPlaying, p_info: info })
+    }).catch(() => {});
+  }
+  setInterval(ping, 60000);
 
   // Download a media file once, keep it in the cache, return a local blob URL
   const blobUrls = {};
@@ -77,20 +105,23 @@
     const res = await fetch(abs, { cache: 'no-store' });
     if (!res.ok) throw new Error('media ' + res.status);
     const blob = await res.blob();
-    try { const c = await caches.open('laas-screen'); await c.put(abs, new Response(blob, { headers: { 'Content-Type': 'video/mp4' } })); } catch (e) {}
+    try { const c = await caches.open('laas-screen'); await c.put(abs, new Response(blob, { headers: { 'Content-Type': blob.type || 'application/octet-stream' } })); } catch (e) {}
     return (blobUrls[abs] = URL.createObjectURL(blob));
   }
 
   function show(i) {
     clearTimeout(timer);
     const items = playlist.items;
+    if (!items.length) { stage.innerHTML = ''; nowPlaying = '(nothing)'; ping(); return; }
     const item = items[i % items.length];
     const single = items.length === 1;
+    nowPlaying = item.name || item.src.split('/').pop();
+    setTimeout(ping, 3000);
     let el;
     if (item.type === 'image') {
       el = new Image();
-      el.src = item.src;
       el.onload = () => swap(el);
+      loadLocal(item.src).then(u => { el.src = u; }, () => { el.src = item.src; });
       if (!single) timer = setTimeout(next, (item.seconds || 8) * 1000);
     } else {
       el = document.createElement('video');
@@ -170,7 +201,12 @@
   async function poll() {
     try {
       const p = await fetchPlaylist();
-      if (playlist && p.version !== playlist.version) { location.reload(); return; }
+      if (playlist && p.version !== playlist.version) {
+        // Download the new files first while the old content keeps playing, then switch
+        for (const it of p.items || []) { try { await loadLocal(it.src); } catch (e) {} }
+        await remember(p);
+        location.reload(); return;
+      }
     } catch (e) { /* offline: keep playing */ }
     setTimeout(poll, ((playlist && playlist.checkEveryMinutes) || 2) * 60000);
   }
@@ -184,16 +220,20 @@
     try {
       const c = await caches.open('laas-screen');
       const keep = new Set();
-      playlist.items.forEach(i => [i.src, i.fallback].forEach(s => s && keep.add(new URL(s, location.href).pathname)));
+      playlist.items.forEach(i => [i.src, i.fallback].forEach(x => x && keep.add(new URL(x, location.href).href)));
       for (const req of await c.keys()) {
-        const p = new URL(req.url).pathname;
-        if (p.includes('/media/') && !keep.has(p)) await c.delete(req);
+        if (/\.(mp4|webm|jpe?g|png|webp)$/i.test(new URL(req.url).pathname) && !keep.has(req.url)) await c.delete(req);
       }
     } catch (e) {}
   }
 
+  // Keep the latest playlist so the screen can start without internet
+  async function remember(p) {
+    try { const c = await caches.open('laas-screen'); await c.put('playlist.json', new Response(JSON.stringify(p), { headers: { 'Content-Type': 'application/json' } })); } catch (e) {}
+  }
+
   async function start() {
-    try { playlist = await fetchPlaylist(); }
+    try { playlist = await fetchPlaylist(); remember(playlist); }
     catch (e) {
       const c = await caches.open('laas-screen').catch(() => null);
       const hit = c && await c.match('playlist.json');
