@@ -129,7 +129,9 @@
     if (!v) return;
     if (v.currentTime === lastT && !v.paused) stuck++; else stuck = 0;
     lastT = v.currentTime;
-    if (stuck >= 3) location.reload();
+    // Slow wifi: never reload the page, just nudge the video. Reload only after 10 min frozen.
+    if (stuck === 6) { v.play().catch(() => {}); }
+    if (stuck >= 120) location.reload();
     if (v.paused) v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
   }, 5000);
 
