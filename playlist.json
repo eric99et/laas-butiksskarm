@@ -1,7 +1,11 @@
 {
-  "version": "2026-11-16-2",
+  "version": "2026-11-16-3",
   "checkEveryMinutes": 2,
   "items": [
-    { "type": "video", "src": "media/blueprint-2026-11-16.mp4" }
+    {
+      "type": "video",
+      "src": "media/blueprint-2026-11-16.mp4",
+      "fallback": "media/blueprint-2026-11-16-720.mp4"
+    }
   ]
 }

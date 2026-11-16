@@ -9,15 +9,15 @@
 <title>LAAS Screen</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
-  #stage { position: fixed; inset: 0; background: #000; }
+  #stage { position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%; background: #000; }
   #stage video, #stage img {
-    position: absolute; inset: 0; width: 100%; height: 100%;
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
     object-fit: cover; opacity: 0; transition: opacity .6s ease;
   }
   #stage .on { opacity: 1; }
   /* Fallback: ?rotate=90 / 270 if Android itself is not rotated */
   body.rot90 #stage, body.rot270 #stage {
-    width: 100vh; height: 100vw; inset: auto; top: 50%; left: 50%;
+    width: 100vh; height: 100vw; right: auto; bottom: auto; top: 50%; left: 50%;
   }
   body.rot90 #stage { transform: translate(-50%, -50%) rotate(90deg); }
   body.rot270 #stage { transform: translate(-50%, -50%) rotate(-90deg); }
@@ -77,8 +77,19 @@
       el.preload = 'auto';
       el.muted = !soundAllowed || item.mute === true;
       if (single) el.loop = true; else el.onended = next;
-      el.onerror = () => setTimeout(() => location.reload(), 30000);
-      el.addEventListener('playing', () => swap(el), { once: true });
+      el.onerror = () => {
+        // Screen can't decode full size: try the smaller fallback once
+        if (item.fallback && el.src.indexOf(item.fallback) === -1) { el.src = item.fallback; el.play().catch(() => {}); return; }
+        setTimeout(() => location.reload(), 30000);
+      };
+      // Also fall back if nothing has loaded after 12 s
+      if (item.fallback) setTimeout(() => {
+        if (el.readyState < 2 && el.src.indexOf(item.fallback) === -1) { el.src = item.fallback; el.muted = true; el.play().catch(() => {}); }
+      }, 12000);
+      let shown = false;
+      const reveal = () => { if (!shown) { shown = true; swap(el); } };
+      el.addEventListener('playing', reveal);
+      el.addEventListener('loadeddata', reveal);
       el.play().catch(() => {
         // Browser blocked sound: play muted, unmute on first touch
         soundAllowed = false; el.muted = true; el.play().catch(() => {});
@@ -88,10 +99,28 @@
   function swap(el) {
     const old = [...stage.children];
     stage.appendChild(el);
-    requestAnimationFrame(() => el.classList.add('on'));
+    setTimeout(() => el.classList.add('on'), 30);
     setTimeout(() => old.forEach(o => { if (o.pause) o.pause(); o.remove(); }), 800);
   }
   function next() { idx = (idx + 1) % playlist.items.length; show(idx); }
+
+  // If nothing plays after 8 s, show what is wrong on the screen itself
+  const status = document.createElement('div');
+  status.style.cssText = 'position:fixed;left:16px;right:16px;bottom:16px;z-index:9;background:rgba(0,0,0,.85);color:#fff;font:600 22px/1.4 sans-serif;padding:14px 18px;border-radius:8px;display:none';
+  document.body.appendChild(status);
+  setInterval(() => {
+    const v = stage.querySelector('video');
+    const ok = v && !v.paused && v.readyState >= 2;
+    if (ok && params.get('debug') !== '1') { status.style.display = 'none'; return; }
+    if (performance.now() < 8000 && params.get('debug') !== '1') return;
+    const cv = (navigator.userAgent.match(/Chrome\/(\d+)/) || [])[1] || '?';
+    const av = (navigator.userAgent.match(/Android ([\d.]+)/) || [])[1] || '?';
+    const can = document.createElement('video').canPlayType('video/mp4; codecs="avc1.64002A"') || 'nej';
+    status.textContent = 'Status: ' + (!playlist ? 'ingen playlist (nät?)' : !v ? 'ingen video' :
+      v.error ? 'videofel ' + v.error.code : v.paused ? 'pausad – tryck på skärmen' : ok ? 'spelar' + (v.muted ? ' (tyst)' : ' med ljud') : 'laddar (' + v.readyState + ')') +
+      ' · Chrome ' + cv + ' · Android ' + av + ' · H.264 ' + can + ' · ' + innerWidth + '×' + innerHeight;
+    status.style.display = 'block';
+  }, 2000);
 
   // Watchdog: if a video freezes, restart it
   let lastT = -1, stuck = 0;
@@ -121,7 +150,8 @@
   async function prune() {
     try {
       const c = await caches.open('laas-screen');
-      const keep = new Set(playlist.items.map(i => new URL(i.src, location.href).pathname));
+      const keep = new Set();
+      playlist.items.forEach(i => [i.src, i.fallback].forEach(s => s && keep.add(new URL(s, location.href).pathname)));
       for (const req of await c.keys()) {
         const p = new URL(req.url).pathname;
         if (p.includes('/media/') && !keep.has(p)) await c.delete(req);
