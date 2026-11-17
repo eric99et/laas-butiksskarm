@@ -71,13 +71,18 @@
     return r.json();
   }
 
-  // Tell HQ what is on the screen right now (so the team can see it switched)
+  // Tell HQ what is on the screen right now (so the team can see it switched).
+  // Only the shop screen (Android) checks in, so a computer that opens this page
+  // can't make HQ show the screen as online. ?ping=1 forces it, ?ping=0 turns it off.
+  const isAndroid = /Android/.test(navigator.userAgent);
+  const canPing = params.get('ping') === '1' || (isAndroid && params.get('ping') !== '0');
   let nowPlaying = '';
   function ping() {
-    if (!playlist) return;
+    if (!playlist || !canPing) return;
     const v = stage.querySelector('video.on');
     const cv = (navigator.userAgent.match(/Chrome\/(\d+)/) || [])[1] || '?';
-    const info = 'Chrome ' + cv + ' · ' + innerWidth + '×' + innerHeight + ' · ' + (v ? (v.muted ? 'sound off' : 'sound on') : 'image');
+    const av = (navigator.userAgent.match(/Android ([\d.]+)/) || [])[1];
+    const info = (av ? 'Android ' + av + ' · ' : '') + 'Chrome ' + cv + ' · ' + innerWidth + '×' + innerHeight + ' · ' + (v ? (v.muted ? 'sound off' : 'sound on') : 'image');
     fetch(SB + '/rest/v1/rpc/screen_ping', {
       method: 'POST',
       headers: { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' },
